@@ -244,6 +244,11 @@ def main():
         "--cleanup", action="store_true",
         help="Delete local .sz and .xz files after successful submission",
     )
+    parser.add_argument(
+        "--fail-fast", type=int, default=30, metavar="N",
+        help="Exit with status 1 after N consecutive failed tasks "
+             "(0 disables; default: 30). Guards against unhealthy compute nodes.",
+    )
     args = parser.parse_args()
 
     api_token = Path(args.api_token_file).read_text().strip()
@@ -256,6 +261,8 @@ def main():
 
     completed = 0
     failed = 0
+    consecutive_failures = 0
+    aborted = False
 
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         pending = set()
@@ -271,7 +278,7 @@ def main():
             ))
             submitted += 1
 
-        while pending:
+        while pending and not aborted:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
                 result = future.result()
@@ -279,7 +286,19 @@ def main():
 
                 if result.startswith("FAIL"):
                     failed += 1
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
                 completed += 1
+
+                if args.fail_fast > 0 and consecutive_failures >= args.fail_fast:
+                    print(
+                        f"ABORT: {consecutive_failures} consecutive failures "
+                        f"(>= --fail-fast={args.fail_fast}); stopping.",
+                        flush=True,
+                    )
+                    aborted = True
+                    break
 
                 # Submit more work if we haven't reached the total yet.
                 if submitted < args.chunks:
@@ -287,6 +306,8 @@ def main():
                     submitted += 1
 
     print(f"\nDone: {completed} chunks processed, {failed} failed.")
+    if aborted:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
