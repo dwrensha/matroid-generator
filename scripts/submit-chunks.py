@@ -38,6 +38,11 @@ MAX_IC_ATTEMPTS = 3
 
 HTTP_MAX_ATTEMPTS = 4
 HTTP_RETRY_BASE_DELAY = 2.0  # seconds; exponential with full jitter
+# Per-socket-operation timeout (connect / single send / single recv). Bounds
+# silent hangs when the network goes "unreachable but routes still exist" —
+# without this, urlopen will block inside connect() for the kernel's TCP
+# timeout (often minutes), preventing the retry/fail-fast loop from running.
+HTTP_TIMEOUT = 60.0
 
 
 def _is_retryable_status(code):
@@ -65,7 +70,7 @@ def urlopen_with_retry(req, what):
     for attempt in range(1, HTTP_MAX_ATTEMPTS + 1):
         override_delay = None
         try:
-            return urllib.request.urlopen(req)
+            return urllib.request.urlopen(req, timeout=HTTP_TIMEOUT)
         except urllib.error.HTTPError as e:
             if not _is_retryable_status(e.code) or attempt == HTTP_MAX_ATTEMPTS:
                 raise
