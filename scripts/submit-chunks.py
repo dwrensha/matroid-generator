@@ -302,6 +302,14 @@ def main():
                         f"(>= --fail-fast={args.fail_fast}); stopping.",
                         flush=True,
                     )
+                    # Terminate in-flight workers; otherwise the with-block's
+                    # implicit shutdown(wait=True) would block until every
+                    # running chunk finishes, and a single chunk can take
+                    # many hours. cancel_futures=True (3.9+) only cancels
+                    # queued futures, not running ones, so we reach into
+                    # pool._processes.
+                    for proc in list(pool._processes.values()):
+                        proc.terminate()
                     aborted = True
                     break
 
