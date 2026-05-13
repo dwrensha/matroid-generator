@@ -128,8 +128,13 @@ def process_chunk(base_url, api_token, cleanup=False, initial_delay=0.0):
             body = json.loads(resp.read().decode())
             chunk_id = body["index"]
     except urllib.error.HTTPError as e:
+        body_text = e.read().decode().strip()
+        # 404 from /new-assignment means the server has no more work to hand
+        # out. Signal the main loop to stop scheduling additional chunks.
+        if e.code == 404:
+            return f"DONE: no more assignments ({body_text})"
         status = "FAIL" if _is_retryable_status(e.code) else "SKIP"
-        return f"{status}: server returned {e.code} for /new-assignment ({e.read().decode().strip()})"
+        return f"{status}: server returned {e.code} for /new-assignment ({body_text})"
     except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
         return f"FAIL: /new-assignment error: {type(e).__name__}: {e}"
 
@@ -268,6 +273,7 @@ def main():
     failed = 0
     consecutive_failures = 0
     aborted = False
+    server_done = False
 
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         pending = set()
@@ -294,7 +300,19 @@ def main():
                     consecutive_failures += 1
                 else:
                     consecutive_failures = 0
-                completed += 1
+                if result.startswith("DONE"):
+                    # Server has no more work; stop scheduling new chunks and
+                    # let in-flight workers drain. We don't count this toward
+                    # `completed` since no chunk was actually processed.
+                    if not server_done:
+                        print(
+                            "Server reports no more assignments; "
+                            "draining in-flight workers and exiting.",
+                            flush=True,
+                        )
+                    server_done = True
+                else:
+                    completed += 1
 
                 if args.fail_fast > 0 and consecutive_failures >= args.fail_fast:
                     print(
@@ -313,8 +331,9 @@ def main():
                     aborted = True
                     break
 
-                # Submit more work if we haven't reached the total yet.
-                if submitted < args.chunks:
+                # Submit more work if we haven't reached the total yet and
+                # the server still has assignments to give out.
+                if submitted < args.chunks and not server_done:
                     pending.add(pool.submit(process_chunk, args.base_url, api_token, args.cleanup))
                     submitted += 1
 
